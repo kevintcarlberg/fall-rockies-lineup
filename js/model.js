@@ -47,6 +47,20 @@ const Positions = {
 const Store = (() => {
   const KEY = 'rockiesLineupData_v1';
 
+  // Only used to populate the roster on the very first load (no saved data yet) —
+  // after that, the roster is whatever's in localStorage, and "Erase all data" in
+  // Settings wipes to a truly empty roster rather than resetting back to this list.
+  const SEED_ROSTER_NAMES = [
+    'Peter Bartels', 'Chase Carlberg', 'Landon Conrad', 'Lennox Dixon', 'Brady Doton',
+    'Haruki Kaninworapan', 'Cooper Kweon', 'Jack Levering', 'Jerry North', 'Perry Smith',
+    'Luca Tidwell', 'Brayden Vagt', 'Wesley Wegener'
+  ];
+  function seedRoster() {
+    return SEED_ROSTER_NAMES.map(name => ({
+      id: Util.uid('p'), name, active: true, canPitch: false, canCatch: false, preferred: [], notes: ''
+    }));
+  }
+
   function defaultState() {
     return {
       version: 1,
@@ -62,7 +76,7 @@ const Store = (() => {
   function load() {
     try {
       const raw = localStorage.getItem(KEY);
-      if (!raw) return defaultState();
+      if (!raw) { const s = defaultState(); s.roster = seedRoster(); return s; }
       const parsed = JSON.parse(raw);
       const merged = Object.assign(defaultState(), parsed);
       merged.settings = Object.assign(defaultState().settings, parsed.settings || {});
