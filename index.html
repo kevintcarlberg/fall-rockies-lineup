@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Fall Rockies Lineup Manager</title>
+<meta name="description" content="Plan and manage Little League lineups: fair infield/outfield/bench rotation, live in-game adjustments, and KNLL rule compliance.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚾</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⚾ <span id="teamNameLabel">Fall Rockies</span> Lineup</div>
+  <nav class="tabs">
+    <a href="#/games" data-tab="games">Games</a>
+    <a href="#/roster" data-tab="roster">Roster</a>
+    <a href="#/stats" data-tab="stats">Season Stats</a>
+    <a href="#/settings" data-tab="settings">Settings</a>
+  </nav>
+</header>
+<main id="app"></main>
+<div id="modalRoot"></div>
+<script src="js/model.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
