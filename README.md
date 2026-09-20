@@ -76,14 +76,21 @@ The shared source of truth is `data/state.json` in this repo.
 
 ## How the recommendation engine applies the KNLL rules
 
-- **Infield minimum (2 innings)** — treated as a hard requirement for every
-  player present at the start. As a game gets closer to its last innings for a
-  given player, the engine forces an infield placement once there's no more
-  slack left to satisfy it.
-- **Bench balance (±1 inning)** — the engine always benches whoever has sat
-  the fewest innings so far this game (ties broken by who's played the most
-  total innings), so nobody's bench count can drift more than one inning away
-  from anyone else's, barring the pitcher exception below.
+- **Infield minimum (2 innings)** — a hard requirement for every player present
+  at the start. **Pitcher and catcher count as infield** for this rule, which is
+  both the standard Little League reading and a practical necessity: with only
+  1B/2B/3B/SS there are 24 infield innings in a 6-inning game, and 13 kids need
+  26. The planner serves whoever is shortest on infield time first, and a repair
+  pass afterward trades kids between outfield and infield — chaining swaps when
+  the roster is tight — until everyone clears the minimum. Bench counts are never
+  touched by those trades, so fixing one rule can't break the other.
+- **Bench balance (±1 inning)** — the bench is chosen *before* positions each
+  inning, always seating whoever has sat the fewest innings (ties broken by who
+  has sat least this season, then who's played the most today). Choosing
+  positions first and benching the leftovers is what lets the same kids get
+  skipped repeatedly, so the rotation is decided first and everything else fits
+  around it. The one exception: the last kid who can pitch or catch is never
+  benched, since that strands the position.
 - **Pitcher exception** — a normal single-inning pitching turn is just
   ordinary rotation and doesn't force anything. The moment you keep a pitcher
   in for a **second consecutive inning** (via "Keep pitching"), the exception

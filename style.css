@@ -65,6 +65,8 @@ a { color: inherit; }
 .sync-badge.sync-pushing, .sync-badge.sync-pulling { color: var(--battery-line); border-color: var(--battery-line); }
 .sync-badge.sync-error, .sync-badge.sync-no-token { color: var(--bench-line); border-color: var(--bench-line); }
 .sync-badge:empty { display: none; }
+.if-ok { color: var(--infield-line); font-weight: 600; }
+.if-short { color: var(--bench-line); font-weight: 700; }
 
 main#app { max-width: 1200px; margin: 0 auto; padding: 1rem; padding-bottom: 4rem; }
 
@@ -122,8 +124,12 @@ table.roster-table tr.clickable:hover { background: rgba(31,122,63,.06); }
 
 .notice { background: var(--battery); border-color: var(--battery-line); }
 
-.attend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .35rem .75rem; }
-.attend-row { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
+.attend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: .35rem .75rem; }
+/* Name and its action link are one cell, so a wrapped link can't drift away
+   from the player it belongs to. */
+.attend-item { display: flex; align-items: baseline; gap: .25rem; min-width: 0; }
+.attend-row { display: flex; align-items: center; gap: .4rem; font-size: .9rem; min-width: 0; }
+.attend-row span, .attend-item .muted { white-space: nowrap; }
 
 fieldset { border: 1px solid var(--border); border-radius: 8px; margin: .75rem 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }

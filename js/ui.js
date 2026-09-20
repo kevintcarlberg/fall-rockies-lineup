@@ -198,14 +198,14 @@ const UI = (() => {
           extra = `<span class="muted small">left after inning ${a.toInning}</span>`;
         }
       }
-      return `<label class="attend-row"><input type="checkbox" class="attend-check" data-pid="${p.id}" ${a.in ? 'checked' : ''} ${game.status !== 'planning' ? 'disabled' : ''}> ${Util.esc(p.name)}</label>${extra}`;
+      return `<div class="attend-item"><label class="attend-row"><input type="checkbox" class="attend-check" data-pid="${p.id}" ${a.in ? 'checked' : ''} ${game.status !== 'planning' ? 'disabled' : ''}> ${Util.esc(p.name)}</label>${extra}</div>`;
     }).join('');
 
     const slots = Positions.fieldSlots(game.outfieldCount);
     const inningCols = [];
     for (let i = 1; i <= game.innings; i++) inningCols.push(i);
 
-    const headerRow = `<tr><th class="sticky-col">Player</th>${inningCols.map(i => `<th class="${i === game.currentInning && game.status === 'live' ? 'col-current' : ''}">Inn ${i}${i < game.currentInning ? ' ✓' : ''}</th>`).join('')}<th>INF</th><th>OUT</th><th>BAT</th><th>BN</th></tr>`;
+    const headerRow = `<tr><th class="sticky-col">Player</th>${inningCols.map(i => `<th class="${i === game.currentInning && game.status === 'live' ? 'col-current' : ''}">Inn ${i}${i < game.currentInning ? ' ✓' : ''}</th>`).join('')}<th>INF</th><th>OUT</th><th>BAT</th><th>BN</th><th title="Infield innings including pitcher/catcher — KNLL requires 2">IF min</th></tr>`;
 
     const bodyRows = everPresentIds.map(pid => {
       const player = Util.byId(roster, pid);
@@ -225,7 +225,9 @@ const UI = (() => {
         </td>`;
       }).join('');
       const s = stats[pid] || Engine.emptyLine();
-      return `<tr><td class="sticky-col">${Util.esc(player ? player.name : pid)}</td>${cells}<td>${s.infield}</td><td>${s.outfield}</td><td>${s.battery}</td><td>${s.bench}</td></tr>`;
+      const starter = Engine.isStarter(game, pid);
+      const ifOk = s.infieldCredit >= 2 || !starter;
+      return `<tr><td class="sticky-col">${Util.esc(player ? player.name : pid)}</td>${cells}<td>${s.infield}</td><td>${s.outfield}</td><td>${s.battery}</td><td>${s.bench}</td><td class="${ifOk ? 'if-ok' : 'if-short'}">${s.infieldCredit}${starter ? (ifOk ? ' ✓' : ' ⚠') : ''}</td></tr>`;
     }).join('');
 
     const currentPitcher = game.status === 'live' ? Object.entries(game.assignments[game.currentInning] || {}).find(([, pos]) => pos === 'P') : null;
@@ -282,6 +284,19 @@ const UI = (() => {
       </section>`;
 
     wireGameDetailEvents(state, game);
+    scrollCurrentInningIntoView();
+  }
+
+  // On a phone the grid is wider than the screen, and the inning you need is the
+  // one being played — park it right next to the sticky name column.
+  function scrollCurrentInningIntoView() {
+    const current = app().querySelector('.lineup-table thead th.col-current');
+    const wrap = current && current.closest('.table-wrap');
+    if (!wrap) return;
+    const sticky = app().querySelector('.lineup-table .sticky-col');
+    const stickyWidth = sticky ? sticky.getBoundingClientRect().width : 0;
+    const offset = current.getBoundingClientRect().left - wrap.getBoundingClientRect().left;
+    wrap.scrollLeft += offset - stickyWidth - 8;
   }
 
   function wireGameDetailEvents(state, game) {
@@ -351,6 +366,7 @@ const UI = (() => {
         <td>${s.outfield} <span class="muted">(${Util.pct(s.outfield / (s.innings || 1))})</span></td>
         <td>${s.battery} <span class="muted">(${Util.pct(s.battery / (s.innings || 1))})</span></td>
         <td>${s.bench} <span class="muted">(${Util.pct(s.bench / (s.innings || 1))})</span></td>
+        <td><strong>${s.infieldCredit}</strong> <span class="muted">(${Util.pct(s.infieldCredit / (s.innings || 1))})</span></td>
       </tr>`;
     }).join('');
     app().innerHTML = `
@@ -359,8 +375,8 @@ const UI = (() => {
         <p class="muted">Cumulative record across all games (only innings already played count). This is the source the recommendation engine uses to keep everyone's fractional playing time balanced over the season.</p>
         <div class="table-wrap">
         <table class="roster-table">
-          <thead><tr><th>Player</th><th>Games</th><th>Def. Innings</th><th>Infield</th><th>Outfield</th><th>Battery</th><th>Bench</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="7" class="muted">No data yet.</td></tr>`}</tbody>
+          <thead><tr><th>Player</th><th>Games</th><th>Def. Innings</th><th>Infield</th><th>Outfield</th><th>Battery</th><th>Bench</th><th title="Infield including pitcher/catcher — what the KNLL 2-inning minimum is measured against">Infield total</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="8" class="muted">No data yet.</td></tr>`}</tbody>
         </table>
         </div>
       </section>`;

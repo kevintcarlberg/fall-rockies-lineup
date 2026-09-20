@@ -37,6 +37,14 @@ const Positions = {
     if (this.infield.includes(pos)) return 'infield';
     return 'outfield';
   },
+  // P and C are infield positions for the KNLL 2-inning infield minimum. They're
+  // still tracked as their own "battery" category for display, but they count as
+  // infield time — without them the rule is unsatisfiable (13 kids x 2 innings =
+  // 26 needed, but 4 infield slots x 6 innings = only 24 available).
+  countsAsInfield(pos) {
+    const g = this.groupOf(pos);
+    return g === 'infield' || g === 'battery';
+  },
   label(pos) {
     const map = { P: 'Pitcher', C: 'Catcher', '1B': 'First Base', '2B': 'Second Base', '3B': 'Third Base', SS: 'Shortstop', LF: 'Left Field', CF: 'Center Field', RF: 'Right Field', LC: 'Left-Center', RC: 'Right-Center', BN: 'Bench' };
     return map[pos] || pos;
@@ -113,13 +121,14 @@ const Engine = (() => {
     return !!a.in && a.fromInning === 1;
   }
 
-  function emptyLine() { return { infield: 0, outfield: 0, battery: 0, bench: 0, pitcher: 0, catcher: 0, innings: 0 }; }
+  function emptyLine() { return { infield: 0, outfield: 0, battery: 0, bench: 0, pitcher: 0, catcher: 0, infieldCredit: 0, innings: 0 }; }
 
   function addStat(stats, pid, pos) {
     if (!pos) return;
     const s = stats[pid] || (stats[pid] = emptyLine());
     s.innings++;
     s[Positions.groupOf(pos)]++;
+    if (Positions.countsAsInfield(pos)) s.infieldCredit++;
     if (pos === 'P') s.pitcher++;
     if (pos === 'C') s.catcher++;
   }
@@ -169,7 +178,17 @@ const Engine = (() => {
     const warnings = [];
     const newAssignments = {};
     let lastPitcher = null;
-    let pitcherStreak = 0; // consecutive innings (ending at the previous inning) lastPitcher has thrown
+    let pitcherStreak = 0;      // consecutive innings (through the previous inning) lastPitcher has thrown
+    let streakWasLocked = false; // ...and whether the coach pinned it there
+
+    // How many innings this player still has available, counting the current one.
+    const inningsLeftFor = (pid, inning) => {
+      const att = attendanceOf(game, pid);
+      return Math.max(0, Math.min(game.innings, att.toInning) - inning + 1);
+    };
+    // Infield innings this player still owes toward the KNLL minimum (starters only).
+    const needOf = pid => isStarter(game, pid)
+      ? Math.max(0, 2 - ((thisGame[pid] && thisGame[pid].infieldCredit) || 0)) : 0;
 
     for (let inning = 1; inning <= game.innings; inning++) {
       const presentIds = roster.filter(p => p.active && presentDuring(game, p.id, inning)).map(p => p.id);
@@ -194,58 +213,71 @@ const Engine = (() => {
         const benchCapacity = Math.max(0, presentIds.length - slotsAll.length);
         let benchLeft = Math.max(0, benchCapacity - benchAlready);
 
-        // Pitcher exception: a normal single-inning pitching turn does NOT force a sit —
-        // that's just ordinary rotation. The mandatory-sit-next-inning consequence only
-        // kicks in once a pitcher has actually been kept in for 2+ consecutive innings
-        // (i.e. the exception was invoked, usually via "Keep pitching") and is now coming off.
-        if (pitcherStreak >= 2 && lastPitcher && remaining.includes(lastPitcher) && assign[lastPitcher] === undefined) {
+        // Pitcher exception: a normal single-inning turn doesn't force a sit, and
+        // neither does a streak the engine had no choice about (one eligible pitcher
+        // on the roster). The mandatory-sit only follows an exception the *coach*
+        // invoked by locking that pitcher in for a 2nd consecutive inning.
+        if (pitcherStreak >= 2 && streakWasLocked && lastPitcher && remaining.includes(lastPitcher) && assign[lastPitcher] === undefined) {
           assign[lastPitcher] = 'BN';
           remaining = remaining.filter(x => x !== lastPitcher);
           benchLeft = Math.max(0, benchLeft - 1);
         }
 
-        // Infield 2-inning minimum (hard requirement for players present at the start)
-        // comes first — it's a hard legal floor and must not be blocked by anything else.
-        const innsRemainingTotal = game.innings - inning + 1;
-        let urgent = remaining.filter(pid => {
-          if (!isStarter(game, pid)) return false;
-          const have = (thisGame[pid] && thisGame[pid].infield) || 0;
-          const need = 2 - have;
-          if (need <= 0) return false;
-          const att = attendanceOf(game, pid);
-          const inningsLeftForPlayer = Math.min(innsRemainingTotal, att.toInning - inning + 1);
-          return need >= inningsLeftForPlayer;
-        });
-        urgent.sort((a, b) => (2 - ((thisGame[b] && thisGame[b].infield) || 0)) - (2 - ((thisGame[a] && thisGame[a].infield) || 0)));
-        urgent.forEach(pid => {
-          const infSlots = openSlots.filter(s => Positions.groupOf(s) === 'infield');
-          if (!infSlots.length) {
-            warnings.push(`Inning ${inning}: ${playerById(pid) ? playerById(pid).name : pid} may miss the 2-infield-inning minimum.`);
-            return;
+        // Bench is chosen FIRST, from everyone available, so the rotation stays even.
+        // (Picking positions first and benching the leftovers lets the same kids get
+        // skipped over and over, which is how bench counts drift past the ±1 rule.)
+        if (benchLeft > 0) {
+          // Bench count is the hard rule, so it sorts first and nothing below it can
+          // push a player past someone who has already sat more. "Can't spare the
+          // inning" (still owes infield innings) only breaks ties among equals.
+          const cantSpare = pid => needOf(pid) > 0 && needOf(pid) >= inningsLeftFor(pid, inning) ? 1 : 0;
+          const ordered = remaining.slice().sort((a, b) => {
+            const ba = (thisGame[a] && thisGame[a].bench) || 0, bb = (thisGame[b] && thisGame[b].bench) || 0;
+            if (ba !== bb) return ba - bb;                       // fewest sits this game
+            const ta = cantSpare(a), tb = cantSpare(b);
+            if (ta !== tb) return ta - tb;                       // spare the kid who owes infield
+            const sa = seasonFraction(seasonStats, a, 'bench'), sb = seasonFraction(seasonStats, b, 'bench');
+            if (sa !== sb) return sa - sb;                       // then fewest sits this season
+            const pa = (thisGame[a] && thisGame[a].innings) || 0, pb = (thisGame[b] && thisGame[b].innings) || 0;
+            return pb - pa;
+          });
+          const chosen = [];
+          // The one hard veto: seating the last kid who can pitch (or catch) strands
+          // that slot and forces an exception streak nobody asked for.
+          const wouldStrand = pid => ['canPitch:P', 'canCatch:C'].some(spec => {
+            const [flag, posCode] = spec.split(':');
+            const p = playerById(pid);
+            if (!openSlots.includes(posCode) || !p || !p[flag]) return false;
+            return !remaining.some(x => x !== pid && !chosen.includes(x) && playerById(x) && playerById(x)[flag]);
+          });
+          for (const pid of ordered) {
+            if (chosen.length >= benchLeft) break;
+            if (!wouldStrand(pid)) chosen.push(pid);
           }
-          const player = playerById(pid);
-          const slot = infSlots.find(s => player && player.preferred && player.preferred.includes(s)) || infSlots[0];
-          assign[pid] = slot;
-          openSlots = openSlots.filter(s => s !== slot);
-          remaining = remaining.filter(x => x !== pid);
-        });
+          // Only if the mound veto starved the bench do we seat a protected player.
+          for (const pid of ordered) {
+            if (chosen.length >= benchLeft) break;
+            if (!chosen.includes(pid)) chosen.push(pid);
+          }
+          chosen.forEach(pid => { assign[pid] = 'BN'; remaining = remaining.filter(x => x !== pid); });
+          benchLeft = 0;
+        }
 
-        // Pitcher / catcher come next, before bench selection — canPitch/canCatch
-        // eligible kids are usually a scarce subset, and bench selection must not be
-        // allowed to sit the only remaining alternative to the current pitcher (that
-        // would strand the mound and force an unwanted, unrequested pitcher-exception
-        // streak). `avoid` also keeps the auto recommendation from re-picking the same
-        // pitcher back-to-back on its own — staying in for a 2nd+ consecutive inning is
-        // the pitcher exception, a coach decision (the "keep pitching" lock), not
-        // something to auto-invoke, since invoking it carries a mandatory-sit consequence.
+        // Pitcher / catcher, from eligible kids only. `avoid` keeps the engine from
+        // re-picking the same pitcher on its own — a 2nd straight inning is the
+        // coach's call, not the algorithm's.
         const assignBattery = (posCode, flag, avoid) => {
           if (!openSlots.includes(posCode)) return;
           let cands = remaining.filter(pid => playerById(pid) && playerById(pid)[flag]);
-          if (avoid && cands.length > 1) cands = cands.filter(pid => pid !== avoid);
           if (!cands.length) { warnings.push(`Inning ${inning}: no eligible ${Positions.label(posCode).toLowerCase()} available.`); return; }
-          cands.sort((a, b) =>
-            (seasonFraction(seasonStats, a, 'battery') - prefBonus(playerById(a), posCode) * 0.1) -
-            (seasonFraction(seasonStats, b, 'battery') - prefBonus(playerById(b), posCode) * 0.1));
+          if (avoid && cands.length > 1) cands = cands.filter(pid => pid !== avoid);
+          cands.sort((a, b) => {
+            // P/C count toward the infield minimum, so serve anyone still short first.
+            const na = needOf(a) > 0 ? 0 : 1, nb = needOf(b) > 0 ? 0 : 1;
+            if (na !== nb) return na - nb;
+            return (seasonFraction(seasonStats, a, 'battery') - prefBonus(playerById(a), posCode) * 0.1) -
+                   (seasonFraction(seasonStats, b, 'battery') - prefBonus(playerById(b), posCode) * 0.1);
+          });
           const pid = cands[0];
           assign[pid] = posCode;
           remaining = remaining.filter(x => x !== pid);
@@ -254,29 +286,28 @@ const Engine = (() => {
         assignBattery('P', 'canPitch', lastPitcher);
         assignBattery('C', 'canCatch');
 
-        // Bench selection: whoever has sat least so far (this game), then whoever has
-        // played the most total innings so far, sits now — keeps the ±1 balance rule.
-        if (benchLeft > 0) {
-          const pool = [...remaining];
-          pool.sort((a, b) => {
-            const ba = (thisGame[a] && thisGame[a].bench) || 0, bb = (thisGame[b] && thisGame[b].bench) || 0;
-            if (ba !== bb) return ba - bb;
-            const pa = (thisGame[a] && thisGame[a].innings) || 0, pb = (thisGame[b] && thisGame[b].innings) || 0;
-            if (pa !== pb) return pb - pa;
-            return seasonFraction(seasonStats, b, 'innings') - seasonFraction(seasonStats, a, 'innings');
-          });
-          pool.slice(0, benchLeft).forEach(pid => { assign[pid] = 'BN'; remaining = remaining.filter(x => x !== pid); });
-        }
-
-        // Generic fill for the remaining infield/outfield slots: fairness first
-        // (lowest season fraction in that group), light nudge toward preference.
+        // Fill infield then outfield: unmet infield minimums outrank everything,
+        // ordered by who has the least room left to fix it; then season fairness
+        // with a light nudge toward each kid's preferred spots.
         const fillGroup = (group) => {
           let slots = openSlots.filter(s => Positions.groupOf(s) === group);
           if (!slots.length || !remaining.length) return;
+          // Infield fairness is measured on infield credit (P/C included), so a kid
+          // who pitches a lot isn't also first in line for shortstop.
+          const key = group === 'infield' ? 'infieldCredit' : group;
           const pool = [...remaining];
           pool.sort((a, b) => {
-            const fa = seasonFraction(seasonStats, a, group) - prefBonus(playerById(a), group) * 0.15;
-            const fb = seasonFraction(seasonStats, b, group) - prefBonus(playerById(b), group) * 0.15;
+            if (group === 'infield') {
+              const na = needOf(a), nb = needOf(b);
+              if ((na > 0) !== (nb > 0)) return na > 0 ? -1 : 1;
+              if (na > 0) {
+                const slackA = inningsLeftFor(a, inning) - na, slackB = inningsLeftFor(b, inning) - nb;
+                if (slackA !== slackB) return slackA - slackB;
+                if (na !== nb) return nb - na;
+              }
+            }
+            const fa = seasonFraction(seasonStats, a, key) - prefBonus(playerById(a), group) * 0.15;
+            const fb = seasonFraction(seasonStats, b, key) - prefBonus(playerById(b), group) * 0.15;
             return fa - fb;
           });
           const chosen = pool.slice(0, slots.length);
@@ -317,11 +348,82 @@ const Engine = (() => {
       newAssignments[inning] = assign;
       Object.keys(assign).forEach(pid => { addStat(thisGame, pid, assign[pid]); addStat(seasonStats, pid, assign[pid]); });
       const pitcherThisInning = Object.keys(assign).find(pid => assign[pid] === 'P') || null;
-      pitcherStreak = (pitcherThisInning && pitcherThisInning === lastPitcher) ? pitcherStreak + 1 : (pitcherThisInning ? 1 : 0);
+      const pinnedHere = !!(pitcherThisInning && (game.locks[inning] || {})[pitcherThisInning]);
+      if (pitcherThisInning && pitcherThisInning === lastPitcher) {
+        pitcherStreak += 1;
+        streakWasLocked = streakWasLocked || pinnedHere;
+      } else {
+        pitcherStreak = pitcherThisInning ? 1 : 0;
+        streakWasLocked = pinnedHere;
+      }
       lastPitcher = pitcherThisInning;
     }
 
+    repairInfieldMinimums(state, game, newAssignments, thisGame, seasonStats);
     return { assignments: newAssignments, thisGameStats: thisGame, warnings };
+  }
+
+  /**
+   * Greedy inning-by-inning planning can leave a starter short of the 2-inning
+   * infield minimum even when the schedule as a whole has room for everyone.
+   *
+   * This trades that kid into an infield slot in an inning where they're playing
+   * outfield. When the donor can't spare the inning either, it recurses and finds
+   * the donor a replacement elsewhere — a chain of swaps — which is what tight
+   * rosters need (15 kids over 5 innings needs all 30 infield innings, so no
+   * single donor ever has slack). Only outfield-for-infield trades are used, so
+   * bench counts, and therefore the ±1 bench rule, are never disturbed.
+   */
+  function repairInfieldMinimums(state, game, assignments, thisGame, seasonStats) {
+    if (game.status === 'final') return;
+    const editable = inning => inning >= game.currentInning;
+    const recount = () => {
+      Object.keys(thisGame).forEach(k => delete thisGame[k]);
+      for (let i = 1; i <= game.innings; i++) {
+        Object.keys(assignments[i] || {}).forEach(pid => addStat(thisGame, pid, assignments[i][pid]));
+      }
+    };
+    const creditOf = pid => (thisGame[pid] && thisGame[pid].infieldCredit) || 0;
+    const settled = pid => !isStarter(game, pid) || creditOf(pid) >= 2;
+    const canSpare = pid => (!isStarter(game, pid) || creditOf(pid) - 1 >= 2) ? 1 : 0;
+    const snapshot = () => JSON.stringify(assignments);
+    const restore = snap => {
+      const saved = JSON.parse(snap);
+      Object.keys(assignments).forEach(k => delete assignments[k]);
+      Object.assign(assignments, saved);
+      recount();
+    };
+    const swap = (a, x, y) => { const t = a[x]; a[x] = a[y]; a[y] = t; };
+
+    const gain = (pid, depth, chain) => {
+      if (creditOf(pid) >= 2) return true;
+      if (depth > 3 || chain.has(pid)) return false;
+      chain.add(pid);
+      for (let i = 1; i <= game.innings; i++) {
+        if (!editable(i)) continue;
+        const a = assignments[i], locks = game.locks[i] || {};
+        if (!a || locks[pid] || Positions.groupOf(a[pid]) !== 'outfield') continue;
+        const donors = Object.keys(a)
+          .filter(o => o !== pid && !locks[o] && !chain.has(o) && Positions.groupOf(a[o]) === 'infield')
+          .sort((x, y) => canSpare(y) - canSpare(x));
+        for (const donor of donors) {
+          const before = snapshot();
+          swap(a, pid, donor); recount();
+          if (creditOf(pid) >= 2 && (settled(donor) || gain(donor, depth + 1, chain))) { chain.delete(pid); return true; }
+          restore(before);
+        }
+      }
+      chain.delete(pid);
+      return false;
+    };
+
+    for (let pass = 0; pass < 3; pass++) {
+      const short = state.roster.filter(p => p.active && isStarter(game, p.id) && creditOf(p.id) < 2);
+      if (!short.length) return;
+      let changed = false;
+      short.forEach(p => { if (gain(p.id, 0, new Set())) changed = true; });
+      if (!changed) return;
+    }
   }
 
   function applyRecompute(state, gameId) {
@@ -339,14 +441,19 @@ const Engine = (() => {
     const issues = [];
     const starters = state.roster.filter(p => p.active && isStarter(game, p.id));
     starters.forEach(p => {
-      const inf = (stats[p.id] && stats[p.id].infield) || 0;
-      if (inf < 2) issues.push({ level: 'warn', msg: `${p.name}: only ${inf} infield inning${inf === 1 ? '' : 's'} so far (needs 2).` });
+      const inf = (stats[p.id] && stats[p.id].infieldCredit) || 0;
+      if (inf < 2) issues.push({ level: 'warn', msg: `${p.name}: only ${inf} infield inning${inf === 1 ? '' : 's'} (needs 2 — pitcher and catcher count).` });
     });
     // Players serving a carryover sit (see applyCarryoverToNewGame) are *expected* to
     // sit more than everyone else right now — that imbalance is a sanctioned exception,
     // not a rule violation, so they're excluded from the parity check.
     const carryoverIds = new Set(game.carryoverPlayers || []);
-    const fullGame = starters.filter(p => attendanceOf(game, p.id).toInning === game.innings && !carryoverIds.has(p.id));
+    // A kid who pitches every inning is allowed to sit less than everyone else —
+    // that's the pitcher exception itself, and the rule settles up next game.
+    const wholeGamePitchers = starters.filter(p => ((stats[p.id] || {}).pitcher || 0) === game.innings);
+    wholeGamePitchers.forEach(p => issues.push({ level: 'info', msg: `${p.name} is pitching the whole game — if they never sit, they owe two bench innings (starting with the first) next game.` }));
+    const exempt = new Set([...carryoverIds, ...wholeGamePitchers.map(p => p.id)]);
+    const fullGame = starters.filter(p => attendanceOf(game, p.id).toInning === game.innings && !exempt.has(p.id));
     if (fullGame.length > 1) {
       const benches = fullGame.map(p => (stats[p.id] && stats[p.id].bench) || 0);
       const max = Math.max(...benches), min = Math.min(...benches);
