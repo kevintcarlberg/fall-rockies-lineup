@@ -3,7 +3,9 @@
 A no-build, static web app for planning and running Little League lineups: fair
 infield/outfield/bench rotation, live in-game pitcher/position overrides, and
 built-in KNLL rule checking. Everything runs client-side — plain HTML/CSS/JS,
-no framework, no server. Data is stored in your browser's `localStorage`.
+no framework, no server. Team data is shared between coaches by storing it as
+`data/state.json` in this same GitHub repo (see "Multi-coach sync" below), with
+a `localStorage` copy in each browser so the app also works offline.
 
 ## Hosting it on GitHub Pages
 
@@ -47,10 +49,30 @@ use it locally without GitHub Pages at all.
   played count (a live game's not-yet-played innings never leak into this).
   This is also what the engine uses to keep everyone's fractional playing time
   balanced *across* games, not just within one.
-- **Settings tab** — team name, defaults, and JSON export/import. Since data
-  lives only in this browser, export a backup occasionally, and use
-  export/import to move your plan between devices (e.g. plan on a laptop,
-  load it on your phone at the field).
+- **Settings tab** — team name, defaults, the multi-coach sync token, and JSON
+  export/import for backups.
+
+## Multi-coach sync
+
+The shared source of truth is `data/state.json` in this repo.
+
+- **Reading needs no setup.** Every page load (and every ~10 seconds while the
+  tab is visible, plus whenever you switch back to the tab) the app fetches the
+  file straight from GitHub and adopts it if it's newer than what the browser
+  has. Any coach who opens the URL sees the current roster, games, and lineups.
+- **Publishing needs a token.** To make *your* edits show up for everyone, go
+  to Settings → Multi-Coach Sync and paste a GitHub fine-grained personal
+  access token that is scoped to **only this repository** with
+  **Contents: Read and write** and nothing else. The token is kept in that
+  browser's `localStorage`, sent only to `api.github.com`, and never included
+  in the shared file or in exports. Each edit is then committed to the repo
+  within about a second — so the git history doubles as an audit log of every
+  lineup change.
+- **Without a token**, edits stay local to that browser and get replaced the
+  next time newer shared data arrives. Fine for viewing; not for coaching.
+- **Conflicts** are resolved last-write-wins by timestamp. Two coaches editing
+  the same game at the exact same moment is rare at this scale; if it happens,
+  whoever saved last wins and the other can re-apply their change.
 
 ## How the recommendation engine applies the KNLL rules
 
@@ -86,7 +108,7 @@ by hand, and it's the coach's call, not the algorithm's, in every case.
 
 ## Data & privacy
 
-Everything is stored locally in your browser via `localStorage` — nothing is
-sent anywhere. That also means data doesn't sync between devices or browsers
-automatically; use Settings → Export/Import JSON to move it around or keep a
-backup.
+The shared `data/state.json` lives in this repository. If the repo is public,
+so is that file — keep the roster to names only (no birthdays, contact info,
+or photos). Sync tokens never leave the browser they were entered in, except
+to authenticate directly with GitHub's API.

@@ -67,7 +67,8 @@ const Store = (() => {
       settings: { teamName: 'Fall Rockies', defaultInnings: 6, outfieldCount: 3 },
       roster: [],
       games: [],
-      carryover: {} // pid -> { owedSitInnings }
+      carryover: {}, // pid -> { owedSitInnings }
+      updatedAt: 0
     };
   }
 
@@ -87,9 +88,12 @@ const Store = (() => {
     }
   }
 
-  function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+  function persist() { localStorage.setItem(KEY, JSON.stringify(state)); }
+  // save() stamps a local edit; replaceAll() adopts a whole snapshot (import or
+  // sync) and keeps that snapshot's own timestamp so freshness comparisons stay honest.
+  function save() { state.updatedAt = Date.now(); persist(); }
   function get() { return state; }
-  function replaceAll(newState) { state = Object.assign(defaultState(), newState); save(); }
+  function replaceAll(newState) { state = Object.assign(defaultState(), newState); persist(); }
 
   return { get, save, replaceAll, defaultState, KEY };
 })();
@@ -169,14 +173,16 @@ const Engine = (() => {
 
     for (let inning = 1; inning <= game.innings; inning++) {
       const presentIds = roster.filter(p => p.active && presentDuring(game, p.id, inning)).map(p => p.id);
-      const isFinal = inning < game.currentInning;
+      const isFinal = game.status === 'final' || inning < game.currentInning;
       const existing = game.assignments[inning] || {};
       const locks = game.locks[inning] || {};
       let assign = {};
 
       if (isFinal) {
-        // History is history — never re-decided by the engine.
-        presentIds.forEach(pid => { if (existing[pid]) assign[pid] = existing[pid]; });
+        // History is history — never re-decided by the engine. Keyed off the stored
+        // assignments rather than the active roster so deactivating or removing a
+        // player later can't erase what they actually played.
+        Object.keys(existing).forEach(pid => { if (existing[pid] && presentDuring(game, pid, inning)) assign[pid] = existing[pid]; });
       } else {
         // Seed with anything the coach explicitly locked.
         presentIds.forEach(pid => { if (locks[pid] && existing[pid]) assign[pid] = existing[pid]; });
@@ -309,8 +315,8 @@ const Engine = (() => {
       }
 
       newAssignments[inning] = assign;
-      presentIds.forEach(pid => { addStat(thisGame, pid, assign[pid]); addStat(seasonStats, pid, assign[pid]); });
-      const pitcherThisInning = presentIds.find(pid => assign[pid] === 'P') || null;
+      Object.keys(assign).forEach(pid => { addStat(thisGame, pid, assign[pid]); addStat(seasonStats, pid, assign[pid]); });
+      const pitcherThisInning = Object.keys(assign).find(pid => assign[pid] === 'P') || null;
       pitcherStreak = (pitcherThisInning && pitcherThisInning === lastPitcher) ? pitcherStreak + 1 : (pitcherThisInning ? 1 : 0);
       lastPitcher = pitcherThisInning;
     }
@@ -375,7 +381,16 @@ const Engine = (() => {
 
   function finalizeGame(state, gameId) {
     const game = Util.byId(state.games, gameId);
-    const stats = game._lastStats || recomputeGame(state, gameId).thisGameStats;
+    if (game.status !== 'final') {
+      // Finalizing mid-game means the current inning was the last one played, so
+      // planned-but-unplayed innings are dropped rather than counted as played.
+      if (game.currentInning < game.innings) {
+        game.innings = game.currentInning;
+        Object.values(game.attendance).forEach(a => { if (a.toInning > game.innings) a.toInning = game.innings; });
+      }
+      game.currentInning = game.innings + 1;
+    }
+    const stats = applyRecompute(state, gameId)._lastStats;
     const starters = state.roster.filter(p => p.active && isStarter(game, p.id) && attendanceOf(game, p.id).toInning === game.innings);
     const benches = starters.map(p => (stats[p.id] && stats[p.id].bench) || 0);
     const maxBench = benches.length ? Math.max(...benches) : 0;

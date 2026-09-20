@@ -152,7 +152,6 @@ const UI = (() => {
           <button type="submit" class="btn primary">Create Game</button>
         </div>
       </form>`);
-    modalRoot().querySelector('[data-close]').addEventListener('click', closeModal);
     document.getElementById('newGameForm').addEventListener('submit', e => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -239,8 +238,8 @@ const UI = (() => {
         <div><strong>Live — Inning ${game.currentInning} of ${game.innings}</strong></div>
         ${currentPitcher && nextInningExists ? `<button class="btn" id="keepPitchingBtn" data-pid="${currentPitcher[0]}">Keep ${Util.esc((Util.byId(roster, currentPitcher[0]) || {}).name || '')} pitching next inning</button>` : ''}
         <button class="btn" id="addInningBtn">+ Add extra inning</button>
-        ${game.currentInning <= game.innings ? `<button class="btn primary" id="advanceBtn">Advance to Inning ${game.currentInning + 1} →</button>` : ''}
-        <button class="btn ghost" id="finalizeBtn">Finalize Game</button>
+        ${game.currentInning < game.innings ? `<button class="btn primary" id="advanceBtn">Advance to Inning ${game.currentInning + 1} →</button>` : ''}
+        <button class="btn ${game.currentInning < game.innings ? 'ghost' : 'primary'}" id="finalizeBtn">Finalize Game</button>
       </div>` :
       `<div class="live-bar"><span class="badge badge-final">Final</span></div>`;
 
@@ -315,7 +314,6 @@ const UI = (() => {
     const advanceBtn = document.getElementById('advanceBtn');
     if (advanceBtn) advanceBtn.addEventListener('click', () => {
       game.currentInning += 1;
-      if (game.currentInning > game.innings) { Engine.finalizeGame(state, game.id); }
       Engine.applyRecompute(state, game.id); Store.save(); rerender();
     });
     const finalizeBtn = document.getElementById('finalizeBtn');
@@ -324,7 +322,12 @@ const UI = (() => {
       Engine.finalizeGame(state, game.id); Store.save(); rerender();
     });
     const addInningBtn = document.getElementById('addInningBtn');
-    if (addInningBtn) addInningBtn.addEventListener('click', () => { game.innings += 1; Engine.applyRecompute(state, game.id); Store.save(); rerender(); });
+    if (addInningBtn) addInningBtn.addEventListener('click', () => {
+      const prev = game.innings;
+      game.innings += 1;
+      Object.values(game.attendance).forEach(a => { if (a.toInning === prev) a.toInning = game.innings; });
+      Engine.applyRecompute(state, game.id); Store.save(); rerender();
+    });
     const keepBtn = document.getElementById('keepPitchingBtn');
     if (keepBtn) keepBtn.addEventListener('click', () => {
       const next = game.currentInning + 1;
@@ -365,6 +368,7 @@ const UI = (() => {
 
   /* ---------------- Settings ---------------- */
   function renderSettings(state) {
+    const cfg = Sync.getConfig();
     app().innerHTML = `
       <section class="card">
         <h2>Settings</h2>
@@ -378,8 +382,25 @@ const UI = (() => {
         </form>
       </section>
       <section class="card">
+        <h3>Multi-Coach Sync</h3>
+        <p class="muted">The team's roster, games, and lineups are shared through this app's GitHub repo (<code>${Util.esc(cfg.owner)}/${Util.esc(cfg.repo)}</code>). Anyone who opens this page automatically sees the latest shared copy — no setup needed. To <strong>publish</strong> your own changes so other coaches see them, add a GitHub token below.</p>
+        <p id="syncStatusLine" class="muted"></p>
+        <form id="syncForm" class="settings-form">
+          <label>GitHub token (for publishing)
+            <input type="password" name="token" placeholder="github_pat_…" value="${Util.esc(cfg.token)}" autocomplete="off">
+          </label>
+          <p class="muted small">Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>: under "Repository access" pick only <code>${Util.esc(cfg.repo)}</code>, and under "Permissions → Repository permissions" set <strong>Contents: Read and write</strong>. Nothing else. The token stays in this browser only — it's never sent anywhere but GitHub and never included in exports.</p>
+          <div class="btn-row">
+            <button class="btn primary" type="submit">Save token</button>
+            <button class="btn" type="button" id="pullNowBtn">⬇ Pull latest shared data</button>
+            <button class="btn" type="button" id="pushNowBtn">⬆ Publish my changes now</button>
+          </div>
+        </form>
+        <p class="muted small">Without a token, changes you make here stay in this browser only and are replaced whenever newer shared data arrives.</p>
+      </section>
+      <section class="card">
         <h3>Backup &amp; Transfer</h3>
-        <p class="muted">Data is stored only in this browser. Export a backup, or transfer it to another device (e.g. your phone at the field).</p>
+        <p class="muted">Download a snapshot of the data, or load one from a file. Importing only affects this browser — use "Publish my changes now" above if you want it shared with the team.</p>
         <div class="btn-row">
           <button class="btn" id="exportBtn">⬇ Export JSON</button>
           <label class="btn" for="importFile">⬆ Import JSON</label>
@@ -388,7 +409,8 @@ const UI = (() => {
       </section>
       <section class="card danger-zone">
         <h3>Danger Zone</h3>
-        <button class="btn danger" id="resetBtn">Erase all data</button>
+        <p class="muted small">Clears this browser only. The shared team copy on GitHub is untouched and will be pulled back in on the next sync.</p>
+        <button class="btn danger" id="resetBtn">Erase local data</button>
       </section>`;
 
     document.getElementById('settingsForm').addEventListener('submit', e => {
@@ -420,16 +442,59 @@ const UI = (() => {
       reader.readAsText(file);
     });
     document.getElementById('resetBtn').addEventListener('click', () => {
-      if (!confirm('This erases ALL roster, game, and stats data in this browser. Export a backup first if unsure. Continue?')) return;
+      if (!confirm('This erases roster, game, and stats data in this browser (the shared GitHub copy is not affected). Export a backup first if unsure. Continue?')) return;
       Store.replaceAll(Store.defaultState()); rerender();
     });
+    document.getElementById('syncForm').addEventListener('submit', e => {
+      e.preventDefault();
+      Sync.saveConfig({ token: new FormData(e.target).get('token').trim() });
+      Sync.syncOnce(true);
+      rerender();
+    });
+    document.getElementById('pullNowBtn').addEventListener('click', async () => {
+      const remote = await Sync.pull();
+      if (!remote) { alert('No shared data found on GitHub yet (or the network request failed).'); return; }
+      if (!confirm("Replace this browser's data with the shared team copy? Any local changes you haven't published will be lost.")) return;
+      Store.replaceAll(remote); rerender();
+    });
+    document.getElementById('pushNowBtn').addEventListener('click', () => {
+      if (!Sync.hasToken()) { alert('Save a GitHub token first — publishing requires one.'); return; }
+      Sync.push();
+    });
+    updateSyncUI();
   }
 
-  return { route };
+  /* ---------------- Sync status ---------------- */
+  let syncState = { status: 'idle', lastError: '', lastSyncedAt: null };
+  function syncLabel() {
+    const token = Sync.hasToken();
+    switch (syncState.status) {
+      case 'pulling': return '⟳ Checking for team updates…';
+      case 'pushing': return '⬆ Publishing…';
+      case 'synced': return token ? '✓ Synced with team' : '✓ Viewing shared team data (read-only)';
+      case 'error': return '⚠ Sync problem: ' + syncState.lastError;
+      case 'no-token': return '⚠ Add a token in Settings to publish';
+      default: return token ? 'Waiting to sync…' : 'Not connected to shared data yet';
+    }
+  }
+  function updateSyncUI() {
+    const label = syncLabel();
+    const badge = document.getElementById('syncBadge');
+    if (badge) { badge.textContent = label; badge.className = 'sync-badge sync-' + syncState.status; }
+    const line = document.getElementById('syncStatusLine');
+    if (line) line.textContent = label;
+  }
+  function initSync() {
+    Sync.onStatus(s => { syncState = s; updateSyncUI(); });
+    Sync.init(() => rerender());
+  }
+
+  return { route, initSync };
 })();
 
 window.addEventListener('hashchange', UI.route);
 window.addEventListener('DOMContentLoaded', () => {
   if (!location.hash) location.hash = '#/games';
   UI.route();
+  UI.initSync();
 });
